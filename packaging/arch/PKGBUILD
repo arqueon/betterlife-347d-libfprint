@@ -1,6 +1,6 @@
 # Maintainer: arqueon <66568719+arqueon@users.noreply.github.com>
 pkgname=libfprint-betterlife-347d-git
-pkgver=1.94.10.r1.g0000000
+pkgver=1.94.10.r1.g1b644d7
 pkgrel=1
 pkgdesc="libfprint-2 with native Blestech Betterlife 347d:0302 (MOC) and 347d:0304 (MOH) USB fingerprint sensor support"
 arch=('x86_64' 'aarch64')

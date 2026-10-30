@@ -2,7 +2,7 @@
 # Lightweight OpenCV-free variant built against vanilla upstream freedesktop libfprint
 # (recommended when using only 347d:0302 Match-On-Chip without 347d:0304 SIGFM).
 pkgname=libfprint-betterlife-347d-moc-git
-pkgver=1.94.100.r1.g0000000
+pkgver=1.94.100.r1.g1b644d7
 pkgrel=1
 pkgdesc="libfprint-2 (vanilla upstream, no OpenCV) with Blestech Betterlife 347d:0302 Match-On-Chip support"
 arch=('x86_64' 'aarch64')
