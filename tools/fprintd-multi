@@ -1,0 +1,701 @@
+#!/usr/bin/env python3
+"""
+fprintd-multi (también invocable como betterlife-fprintd y zk9500-fprintd)
+Gestor multi-lector para fprintd compatible con:
+  • Blestech Betterlife 347d:0302 (MOC) / 347d:0304 (MOH)
+  • ZKTeco ZK9500 (1b55:0124)
+  • Chipsailing CS9711 (2541:0236)
+  • Cualquier otro lector soportado por libfprint-2 / fprintd.
+
+Permite consultar qué lector seleccionará PAM (pam_fprintd.so) y registrar,
+verificar, sincronizar o borrar huellas apuntando a un lector específico
+incluso cuando hay dos o tres lectores USB conectados simultáneamente.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import os
+import signal
+import sys
+from typing import Any
+
+import gi
+
+gi.require_version("Gio", "2.0")
+gi.require_version("GLib", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+BUS_NAME = "net.reactivated.Fprint"
+MANAGER_PATH = "/net/reactivated/Fprint/Manager"
+MANAGER_IFACE = "net.reactivated.Fprint.Manager"
+DEVICE_IFACE = "net.reactivated.Fprint.Device"
+PROPS_IFACE = "org.freedesktop.DBus.Properties"
+
+FINGER_LABELS: dict[str, str] = {
+    "right-index-finger": "índice derecho",
+    "right-middle-finger": "medio derecho",
+    "right-ring-finger": "anular derecho",
+    "right-little-finger": "meñique derecho",
+    "right-thumb": "pulgar derecho",
+    "left-index-finger": "índice izquierdo",
+    "left-middle-finger": "medio izquierdo",
+    "left-ring-finger": "anular izquierdo",
+    "left-little-finger": "meñique izquierdo",
+    "left-thumb": "pulgar izquierdo",
+}
+
+VALID_FINGERS = tuple(FINGER_LABELS.keys())
+
+DEVICE_ALIASES: dict[str, tuple[str, ...]] = {
+    "betterlife": ("betterlife", "blestech", "347d", "btlfp"),
+    "347d": ("betterlife", "blestech", "347d", "btlfp"),
+    "zk9500": ("zk9500", "zkteco"),
+    "cs9711": ("cs9711", "chipsailing"),
+}
+
+RETRY_MESSAGES: dict[str, str] = {
+    "enroll-retry-scan": "Lectura incompleta; apoya la yema centrada sobre el sensor.",
+    "enroll-swipe-too-short": "Toque demasiado breve; mantén el dedo ~0.4 s sobre el sensor.",
+    "enroll-finger-not-centered": "Dedo descentrado o área repetida; centra bien la yema o varía ligeramente el ángulo.",
+    "enroll-remove-and-retry": "Levanta el dedo por completo y vuelve a apoyarlo.",
+    "verify-retry-scan": "Lectura incompleta; apoya la yema con firmeza en el centro del sensor.",
+    "verify-swipe-too-short": "Toque demasiado breve; mantén el dedo un instante más sobre el sensor.",
+    "verify-finger-not-centered": "Dedo descentrado; colócalo en el centro del sensor.",
+    "verify-remove-and-retry": "Levanta el dedo y vuelve a intentarlo.",
+}
+
+
+def detect_default_selector() -> str | None:
+    prog = os.path.basename(sys.argv[0]).lower()
+    if "zk9500" in prog:
+        return "zk9500"
+    if "betterlife" in prog or "347d" in prog:
+        return "betterlife"
+    if "cs9711" in prog:
+        return "cs9711"
+    return None
+
+
+def get_system_bus() -> Gio.DBusConnection:
+    return Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+
+
+def list_devices(bus: Gio.DBusConnection, user: str) -> list[dict[str, Any]]:
+    res = bus.call_sync(
+        BUS_NAME,
+        MANAGER_PATH,
+        MANAGER_IFACE,
+        "GetDevices",
+        None,
+        GLib.VariantType("(ao)"),
+        Gio.DBusCallFlags.NONE,
+        5000,
+        None,
+    )
+    paths: list[str] = list(res.unpack()[0])
+    devices: list[dict[str, Any]] = []
+
+    for idx, path in enumerate(paths):
+        props_var = bus.call_sync(
+            BUS_NAME,
+            path,
+            PROPS_IFACE,
+            "GetAll",
+            GLib.Variant("(s)", (DEVICE_IFACE,)),
+            GLib.VariantType("(a{sv})"),
+            Gio.DBusCallFlags.NONE,
+            5000,
+            None,
+        )
+        props: dict[str, Any] = props_var.unpack()[0]
+        fingers: list[str] = []
+        auth_err: str | None = None
+        try:
+            f_var = bus.call_sync(
+                BUS_NAME,
+                path,
+                DEVICE_IFACE,
+                "ListEnrolledFingers",
+                GLib.Variant("(s)", (user,)),
+                GLib.VariantType("(as)"),
+                Gio.DBusCallFlags.NONE,
+                5000,
+                None,
+            )
+            fingers = list(f_var.unpack()[0])
+        except GLib.Error as err:
+            msg = err.message or ""
+            if "NoEnrolledPrints" in msg:
+                fingers = []
+            else:
+                auth_err = msg
+
+        devices.append(
+            {
+                "index": idx,
+                "path": path,
+                "name": str(props.get("name", "Unknown")),
+                "stages": int(props.get("num-enroll-stages", 5)),
+                "scan_type": str(props.get("scan-type", "press")),
+                "fingers": fingers,
+                "auth_err": auth_err,
+            }
+        )
+    return devices
+
+
+def compute_pam_selected(devices: list[dict[str, Any]]) -> str | None:
+    """Replica open_device() de pam_fprintd.so: primer lector con estrictamente más huellas."""
+    max_prints = 0
+    chosen_path: str | None = None
+    for dev in devices:
+        n = len(dev["fingers"])
+        if n > max_prints:
+            max_prints = n
+            chosen_path = dev["path"]
+    return chosen_path
+
+
+def resolve_device(devices: list[dict[str, Any]], selector: str | None) -> dict[str, Any]:
+    if not devices:
+        sys.exit("Error: fprintd no detecta ningún lector de huellas conectado.")
+
+    if not selector:
+        if len(devices) == 1:
+            return devices[0]
+        available = ", ".join(f"{d['name']} ({d['path']})" for d in devices)
+        sys.exit(
+            f"Error: hay {len(devices)} lectores conectados ({available}). "
+            "Indica cuál usar con -d betterlife | -d zk9500 | -d cs9711."
+        )
+
+    key = selector.strip().lower()
+    needles = DEVICE_ALIASES.get(key, (key,))
+
+    for dev in devices:
+        haystack = f"{dev['name']} {dev['path']}".lower()
+        if any(n in haystack for n in needles):
+            return dev
+
+    available = ", ".join(f"{d['name']} ({d['path']})" for d in devices)
+    sys.exit(f"Error: no se encontró ningún lector que coincida con '{selector}'. Conectados: {available}")
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    bus = get_system_bus()
+    devices = list_devices(bus, args.user)
+    if not devices:
+        print("No hay lectores de huellas detectados por fprintd.")
+        return 1
+
+    pam_path = compute_pam_selected(devices)
+    print(f"Lectores detectados por fprintd para el usuario '{args.user}':\n")
+    for dev in devices:
+        badge = "  [★ ACTIVO EN PAM]" if dev["path"] == pam_path else ""
+        print(f"  • {dev['name']} ({dev['path']}, {dev['stages']} toques/registro){badge}")
+        if dev["auth_err"]:
+            print(f"      (Polkit requiere sesión gráfica interactiva para listar huellas: {dev['auth_err']})")
+        elif not dev["fingers"]:
+            print("      Sin huellas registradas.")
+        else:
+            print(f"      Huellas registradas ({len(dev['fingers'])}):")
+            for f in dev["fingers"]:
+                label = FINGER_LABELS.get(f, f)
+                print(f"        - {f} ({label})")
+
+    target_sel = args.device or detect_default_selector()
+    if target_sel and all(d["auth_err"] is None for d in devices):
+        needles = DEVICE_ALIASES.get(target_sel.lower(), (target_sel.lower(),))
+        matched = [d for d in devices if any(n in f"{d['name']} {d['path']}".lower() for n in needles)]
+        if matched:
+            tdev = matched[0]
+            if pam_path != tdev["path"]:
+                max_other = max((len(d["fingers"]) for d in devices if d["path"] != tdev["path"]), default=0)
+                needed = max_other if tdev["index"] == 0 and max_other > 0 else max_other + 1
+                prog = os.path.basename(sys.argv[0])
+                dev_flag = "" if detect_default_selector() else f" -d {target_sel}"
+                if max_other == 0:
+                    print(f"\n→ Registra al menos una huella en {tdev['name']} con:")
+                    print(f"    {prog}{dev_flag} enroll right-index-finger")
+                else:
+                    print(
+                        f"\n→ Nota multi-lector: otro lector conectado tiene {max_other} huella(s) y PAM elige "
+                        "automáticamente el lector con más huellas registradas."
+                    )
+                    print(
+                        f"  Para que PAM (sudo, polkit, bloqueo DMS, Bitwarden) use {tdev['name']} mientras "
+                        f"varios lectores estén conectados, registra ≥{needed} dedo(s) en él:"
+                    )
+                    print(f"    {prog}{dev_flag} enroll --sync")
+    return 0
+
+
+def claim_device(bus: Gio.DBusConnection, path: str, user_arg: str = "") -> None:
+    bus.call_sync(
+        BUS_NAME,
+        path,
+        DEVICE_IFACE,
+        "Claim",
+        GLib.Variant("(s)", (user_arg,)),
+        None,
+        Gio.DBusCallFlags.NONE,
+        10000,
+        None,
+    )
+
+
+def release_device(bus: Gio.DBusConnection, path: str) -> None:
+    try:
+        bus.call_sync(
+            BUS_NAME,
+            path,
+            DEVICE_IFACE,
+            "Release",
+            None,
+            None,
+            Gio.DBusCallFlags.NONE,
+            5000,
+            None,
+        )
+    except GLib.Error:
+        pass
+
+
+def enroll_single_finger(bus: Gio.DBusConnection, dev: dict[str, Any], finger: str, has_existing: bool) -> bool:
+    path = dev["path"]
+    total = dev["stages"]
+    label = FINGER_LABELS.get(finger, finger)
+    stage = 0
+    outcome = {"ok": False, "done": False}
+    loop = GLib.MainLoop()
+
+    def on_signal(
+        _conn: Gio.DBusConnection,
+        _sender: str,
+        _obj_path: str,
+        _iface: str,
+        signal_name: str,
+        params: GLib.Variant,
+    ) -> None:
+        nonlocal stage
+        if signal_name != "EnrollStatus":
+            return
+        result, done = params.unpack()
+        if result == "enroll-stage-passed":
+            stage += 1
+            print(f"  ✓ Toque {stage}/{total} capturado — levanta el dedo y vuelve a apoyarlo.")
+        elif result == "enroll-completed":
+            shown = min(stage + 1, total) if stage > 0 else total
+            print(f"  ✓ Toque {shown}/{total} capturado.")
+            print(f"  ✓ Huella '{finger}' ({label}) registrada y guardada ({shown}/{total} toques).")
+            outcome["ok"] = True
+            outcome["done"] = True
+            loop.quit()
+        elif result == "enroll-duplicate":
+            print(f"  ✗ Esa huella ya está registrada en otro dedo en {dev['name']} (enroll-duplicate).")
+            outcome["done"] = True
+            loop.quit()
+        elif result == "enroll-data-full":
+            print(f"  ✗ La memoria interna del lector {dev['name']} está llena (enroll-data-full).")
+            outcome["done"] = True
+            loop.quit()
+        elif result in RETRY_MESSAGES:
+            print(f"  ↻ {RETRY_MESSAGES[result]} ({result})")
+        else:
+            print(f"  ✗ Estado de registro: {result}")
+            if done:
+                outcome["done"] = True
+                loop.quit()
+
+        if done and not outcome["done"]:
+            outcome["done"] = True
+            loop.quit()
+
+    sub_id = bus.signal_subscribe(
+        BUS_NAME,
+        DEVICE_IFACE,
+        "EnrollStatus",
+        path,
+        None,
+        Gio.DBusSignalFlags.NONE,
+        on_signal,
+    )
+
+    def handle_sigint(_sig: int, _frame: Any) -> None:
+        print("\nCancelando registro...")
+        loop.quit()
+
+    prev_sigint = signal.signal(signal.SIGINT, handle_sigint)
+    try:
+        is_optical = "zk9500" in dev["name"].lower() or "zkteco" in dev["name"].lower()
+        is_moc = "moc" in dev["name"].lower()
+        print(f"\n==> Registrando '{finger}' ({label}) en {dev['name']} ({total} toques):")
+        if is_optical:
+            print("    El LED blanco del lector se encenderá; apoya el dedo con firmeza y levántalo tras cada destello.")
+        else:
+            print("    Apoya la yema del dedo sobre el sensor y levántala tras cada lectura (varía levemente la posición).")
+        if is_moc:
+            print("    (Nota MOC: el primer toque verifica que el dedo no esté duplicado; luego contará los 7 toques de registro).")
+        bus.call_sync(
+            BUS_NAME,
+            path,
+            DEVICE_IFACE,
+            "EnrollStart",
+            GLib.Variant("(s)", (finger,)),
+            None,
+            Gio.DBusCallFlags.NONE,
+            15000,
+            None,
+        )
+        loop.run()
+    finally:
+        signal.signal(signal.SIGINT, prev_sigint)
+        bus.signal_unsubscribe(sub_id)
+        try:
+            bus.call_sync(
+                BUS_NAME,
+                path,
+                DEVICE_IFACE,
+                "EnrollStop",
+                None,
+                None,
+                Gio.DBusCallFlags.NONE,
+                5000,
+                None,
+            )
+        except GLib.Error:
+            pass
+
+    return outcome["ok"]
+
+
+def cmd_enroll(args: argparse.Namespace) -> int:
+    bus = get_system_bus()
+    devices = list_devices(bus, args.user)
+    dev = resolve_device(devices, args.device)
+
+    fingers_to_enroll: list[str] = []
+    if args.sync:
+        other_fingers: list[str] = []
+        for d in devices:
+            if d["path"] != dev["path"]:
+                for f in d["fingers"]:
+                    if f not in other_fingers:
+                        other_fingers.append(f)
+        if not other_fingers:
+            other_fingers = ["right-index-finger"]
+
+        existing = set(dev["fingers"])
+        fingers_to_enroll = [f for f in other_fingers if args.replace or f not in existing]
+
+        max_other = max((len(d["fingers"]) for d in devices if d["path"] != dev["path"]), default=0)
+        projected = len(existing | set(fingers_to_enroll))
+        other_before = any(
+            d["index"] < dev["index"] and len(d["fingers"]) == projected and projected > 0
+            for d in devices
+            if d["path"] != dev["path"]
+        )
+        if other_before and projected <= max_other:
+            for extra in VALID_FINGERS:
+                if extra not in existing and extra not in fingers_to_enroll:
+                    print(
+                        f"Nota: otro lector aparece antes en el bus USB con {max_other} huellas; "
+                        f"se añadirá '{extra}' para dar prioridad automática a {dev['name']} en PAM."
+                    )
+                    fingers_to_enroll.append(extra)
+                    break
+
+        if not fingers_to_enroll:
+            print(f"Todos los dedos sincronizados ya están registrados en {dev['name']}.")
+            return cmd_status(args)
+    else:
+        fingers_to_enroll = list(args.fingers) if args.fingers else ["right-index-finger"]
+
+    for f in fingers_to_enroll:
+        if f not in VALID_FINGERS:
+            valid = ", ".join(VALID_FINGERS)
+            sys.exit(f"Error: nombre de dedo inválido '{f}'. Valores válidos: {valid}")
+
+    claim_device(bus, dev["path"], "")
+    all_ok = True
+    enrolled_now = set(dev["fingers"])
+    try:
+        for f in fingers_to_enroll:
+            if f in enrolled_now and args.replace:
+                try:
+                    bus.call_sync(
+                        BUS_NAME,
+                        dev["path"],
+                        DEVICE_IFACE,
+                        "DeleteEnrolledFinger",
+                        GLib.Variant("(s)", (f,)),
+                        None,
+                        Gio.DBusCallFlags.NONE,
+                        10000,
+                        None,
+                    )
+                    enrolled_now.discard(f)
+                except GLib.Error:
+                    pass
+            ok = enroll_single_finger(bus, dev, f, has_existing=bool(enrolled_now))
+            if not ok:
+                all_ok = False
+                break
+            enrolled_now.add(f)
+    finally:
+        release_device(bus, dev["path"])
+
+    print("")
+    cmd_status(args)
+    return 0 if all_ok else 1
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    bus = get_system_bus()
+    devices = list_devices(bus, args.user)
+    dev = resolve_device(devices, args.device)
+    path = dev["path"]
+
+    if not dev["fingers"] and not dev["auth_err"]:
+        sys.exit(f"Error: no hay huellas registradas en {dev['name']} para '{args.user}'.")
+
+    loop = GLib.MainLoop()
+    outcome = {"matched": False, "done": False}
+
+    def on_signal(
+        _conn: Gio.DBusConnection,
+        _sender: str,
+        _obj_path: str,
+        _iface: str,
+        signal_name: str,
+        params: GLib.Variant,
+    ) -> None:
+        if signal_name != "VerifyStatus":
+            return
+        result, done = params.unpack()
+        if result == "verify-match":
+            print(f"  ✓ ¡Huella verificada correctamente en {dev['name']}! (verify-match)")
+            outcome["matched"] = True
+        elif result == "verify-no-match":
+            print(f"  ✗ La huella no coincide en {dev['name']} (verify-no-match).")
+        elif result in RETRY_MESSAGES:
+            print(f"  ↻ {RETRY_MESSAGES[result]} ({result})")
+        else:
+            print(f"  • Estado: {result}")
+        if done:
+            outcome["done"] = True
+            loop.quit()
+
+    sub_id = bus.signal_subscribe(
+        BUS_NAME,
+        DEVICE_IFACE,
+        "VerifyStatus",
+        path,
+        None,
+        Gio.DBusSignalFlags.NONE,
+        on_signal,
+    )
+
+    def handle_sigint(_sig: int, _frame: Any) -> None:
+        print("\nCancelando verificación...")
+        loop.quit()
+
+    prev_sigint = signal.signal(signal.SIGINT, handle_sigint)
+    claim_device(bus, path, "")
+    try:
+        print(f"==> Verificando huella ({args.finger}) en {dev['name']}...")
+        print("    Apoya tu dedo sobre el lector.")
+        bus.call_sync(
+            BUS_NAME,
+            path,
+            DEVICE_IFACE,
+            "VerifyStart",
+            GLib.Variant("(s)", (args.finger,)),
+            None,
+            Gio.DBusCallFlags.NONE,
+            10000,
+            None,
+        )
+        loop.run()
+    finally:
+        signal.signal(signal.SIGINT, prev_sigint)
+        bus.signal_unsubscribe(sub_id)
+        try:
+            bus.call_sync(
+                BUS_NAME,
+                path,
+                DEVICE_IFACE,
+                "VerifyStop",
+                None,
+                None,
+                Gio.DBusCallFlags.NONE,
+                5000,
+                None,
+            )
+        except GLib.Error:
+            pass
+        release_device(bus, path)
+
+    return 0 if outcome["matched"] else 1
+
+
+def cmd_delete(args: argparse.Namespace) -> int:
+    bus = get_system_bus()
+    devices = list_devices(bus, args.user)
+    dev = resolve_device(devices, args.device)
+    path = dev["path"]
+
+    if not args.all and not args.finger:
+        sys.exit("Error: indica un dedo a borrar o usa --all para borrar todas las huellas de este lector.")
+
+    claim_device(bus, path, "")
+    try:
+        if args.all:
+            bus.call_sync(
+                BUS_NAME,
+                path,
+                DEVICE_IFACE,
+                "DeleteEnrolledFingers2",
+                None,
+                None,
+                Gio.DBusCallFlags.NONE,
+                15000,
+                None,
+            )
+            print(f"✓ Eliminadas todas las huellas de '{args.user}' en {dev['name']}.")
+        else:
+            bus.call_sync(
+                BUS_NAME,
+                path,
+                DEVICE_IFACE,
+                "DeleteEnrolledFinger",
+                GLib.Variant("(s)", (args.finger,)),
+                None,
+                Gio.DBusCallFlags.NONE,
+                15000,
+                None,
+            )
+            print(f"✓ Eliminada '{args.finger}' de '{args.user}' en {dev['name']}.")
+    finally:
+        release_device(bus, path)
+
+    print("")
+    return cmd_status(args)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    default_dev = detect_default_selector()
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "-u",
+        "--user",
+        default=argparse.SUPPRESS,
+        help="Usuario de sistema (por defecto: usuario actual).",
+    )
+    common.add_argument(
+        "-d",
+        "--device",
+        default=argparse.SUPPRESS,
+        help=(
+            "Lector objetivo para enroll/verify/delete: "
+            "'betterlife' (347d:0302/0304), 'zk9500' (1b55:0124), 'cs9711' (2541:0236) o ruta D-Bus."
+            + (f" (Por defecto: '{default_dev}')." if default_dev else "")
+        ),
+    )
+
+    parser = argparse.ArgumentParser(
+        prog=os.path.basename(sys.argv[0]),
+        parents=[common],
+        description="Gestor fprintd multi-lector (Betterlife 347d, ZKTeco ZK9500, Chipsailing CS9711).",
+    )
+
+    sub = parser.add_subparsers(dest="cmd")
+
+    sub.add_parser("status", parents=[common], help="Muestra lectores conectados, huellas por lector y cuál elegirá PAM.")
+
+    p_enroll = sub.add_parser(
+        "enroll",
+        parents=[common],
+        help="Registra una o varias huellas en el lector elegido.",
+    )
+    p_enroll.add_argument(
+        "fingers",
+        nargs="*",
+        help="Dedos a registrar (ej. right-index-finger). Por defecto: right-index-finger.",
+    )
+    p_enroll.add_argument(
+        "--sync",
+        action="store_true",
+        help="Registra en este lector los mismos dedos que ya tengas en otro lector conectado para darle prioridad en PAM.",
+    )
+    p_enroll.add_argument(
+        "--replace",
+        action="store_true",
+        help="Reemplaza la huella si ese dedo ya estaba registrado en el lector destino.",
+    )
+
+    p_verify = sub.add_parser(
+        "verify",
+        parents=[common],
+        help="Verifica en vivo una huella en el lector elegido.",
+    )
+    p_verify.add_argument(
+        "finger",
+        nargs="?",
+        default="any",
+        help="Dedo a verificar o 'any' (por defecto).",
+    )
+
+    p_delete = sub.add_parser(
+        "delete",
+        parents=[common],
+        help="Borra una huella (o --all) únicamente del lector elegido.",
+    )
+    p_delete.add_argument("finger", nargs="?", help="Nombre del dedo a borrar.")
+    p_delete.add_argument("--all", action="store_true", help="Borra todas las huellas solo en ese lector.")
+
+    return parser
+
+
+def format_dbus_error(err: GLib.Error) -> str:
+    msg = err.message or str(err)
+    if "AlreadyOpen" in msg:
+        return "El lector está ocupado por otra sesión de fprintd (ej. pantalla de bloqueo u otra terminal). Ciérrala e inténtalo de nuevo."
+    if "TooHot" in msg or "overheating" in msg.lower():
+        return (
+            "fprintd bloqueó temporalmente el lector por su estimador térmico de software (FP_DEVICE_ERROR_TOO_HOT). "
+            "Reinicia fprintd.service."
+        )
+    if "PermissionDenied" in msg:
+        return "Permiso denegado por Polkit para operar fprintd."
+    if "NoEnrolledPrints" in msg:
+        return "No hay huellas registradas para este usuario en el lector seleccionado."
+    return f"Error de fprintd (D-Bus): {msg}"
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    args.user = getattr(args, "user", None) or getpass.getuser()
+    args.device = getattr(args, "device", None) or detect_default_selector()
+    cmd = args.cmd or "status"
+    try:
+        if cmd == "status":
+            return cmd_status(args)
+        if cmd == "enroll":
+            return cmd_enroll(args)
+        if cmd == "verify":
+            return cmd_verify(args)
+        if cmd == "delete":
+            return cmd_delete(args)
+    except GLib.Error as err:
+        print(f"Error: {format_dbus_error(err)}", file=sys.stderr)
+        return 1
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

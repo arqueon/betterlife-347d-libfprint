@@ -1,0 +1,112 @@
+diff --git a/data/autosuspend.hwdb b/data/autosuspend.hwdb
+index 64dafd5..4e7146f 100644
+--- a/data/autosuspend.hwdb
++++ b/data/autosuspend.hwdb
+@@ -72,7 +72,6 @@ usb:v08FFp5501*
+  ID_PERSIST=0
+ 
+ # Supported by libfprint driver cs9711
+-usb:v2541p0236*
+ usb:v2541p9711*
+  ID_AUTOSUSPEND=1
+  ID_PERSIST=0
+diff --git a/libfprint/fprint-list-udev-hwdb.c b/libfprint/fprint-list-udev-hwdb.c
+index 628517f..77dedd1 100644
+--- a/libfprint/fprint-list-udev-hwdb.c
++++ b/libfprint/fprint-list-udev-hwdb.c
+@@ -168,6 +168,11 @@ static const FpIdEntry denylist_id_table[] = {
+   { .vid = 0x0483, .pid = 0x2016 },
+   /* https://bugs.freedesktop.org/show_bug.cgi?id=66659 */
+   { .vid = 0x045e, .pid = 0x00bb },
++  /* Keep ZK9500, CS9711, and Betterlife 347d:0302/0304 out of USB autosuspend */
++  { .vid = 0x1b55, .pid = 0x0124 },
++  { .vid = 0x2541, .pid = 0x0236 },
++  { .vid = 0x347d, .pid = 0x0302 },
++  { .vid = 0x347d, .pid = 0x0304 },
+   { .vid = 0 },
+ };
+ 
+diff --git a/libfprint/meson.build b/libfprint/meson.build
+index 099bf88..d2c3997 100644
+--- a/libfprint/meson.build
++++ b/libfprint/meson.build
+@@ -155,6 +155,12 @@ driver_sources = {
+         [ 'drivers/focaltech_moc/focaltech_moc.c' ],
+     'cs9711' :
+         [ 'drivers/cs9711/cs9711.c' ],
++    'zk9500' :
++        [ 'drivers/zk9500.c' ],
++    'betterlife347d' :
++        [ 'drivers/betterlife347d/betterlife347d.c' ],
++    'betterlife347d_moc' :
++        [ 'drivers/betterlife347d/betterlife347d_moc.c' ],
+ }
+ 
+ helper_sources = {
+@@ -170,6 +176,12 @@ helper_sources = {
+         [ ],
+     'virtual' :
+         [ 'drivers/virtual-device-listener.c' ],
++    'betterlife347d_proto' :
++        [
++            'drivers/betterlife347d/betterlife347d-proto.c',
++            'drivers/betterlife347d/sm3.c',
++            'drivers/betterlife347d/sm4.c',
++        ],
+ }
+ 
+ drivers_sources = []
+diff --git a/libfprint/sigfm/meson.build b/libfprint/sigfm/meson.build
+index 354d943..b8a441e 100644
+--- a/libfprint/sigfm/meson.build
++++ b/libfprint/sigfm/meson.build
+@@ -1,11 +1,13 @@
+ 
+ sigfm_sources = ['sigfm.cpp']
+ 
+-opencv = dependency('opencv4', required: true)
+-doctest = dependency('doctest', required: true)
++opencv = dependency(['opencv4', 'opencv5', 'opencv'], required: true)
++doctest = dependency('doctest', required: false)
+ 
+ libsigfm = static_library('sigfm',
+         sigfm_sources,
+         dependencies: [opencv],
+ )
+-sigfm_tests = executable('sigfm-tests', ['./tests.cpp'], dependencies: [doctest, opencv], link_with: [libsigfm])
++if doctest.found()
++        sigfm_tests = executable('sigfm-tests', ['./tests.cpp'], dependencies: [doctest, opencv], link_with: [libsigfm])
++endif
+diff --git a/meson.build b/meson.build
+index 3dcfede..6e7356e 100644
+--- a/meson.build
++++ b/meson.build
+@@ -146,6 +146,9 @@ default_drivers = [
+     'realtek',
+     'focaltech_moc',
+     'cs9711',
++    'zk9500',
++    'betterlife347d',
++    'betterlife347d_moc',
+ ]
+ 
+ spi_drivers = [
+@@ -180,6 +183,9 @@ endian_independent_drivers = virtual_drivers + [
+     'vcom5s',
+     'vfs101',
+     'vfs7552',
++    'zk9500',
++    'betterlife347d',
++    'betterlife347d_moc',
+ ]
+ 
+ all_drivers = default_drivers + virtual_drivers
+@@ -212,6 +218,8 @@ driver_helper_mapping = {
+     'aes3500' : [ 'aeslib', 'aes3k' ],
+     'aes4000' : [ 'aeslib', 'aes3k' ],
+     'uru4000' : [ 'openssl' ],
++    'betterlife347d' : [ 'openssl', 'betterlife347d_proto' ],
++    'betterlife347d_moc' : [ 'openssl', 'betterlife347d_proto' ],
+     'elanspi' : [ 'udev' ],
+     'virtual_image'          : [ 'virtual' ],
+     'virtual_device'         : [ 'virtual' ],

@@ -1,0 +1,14 @@
+build/
+pkg/
+src/
+*.pkg.tar.*
+*.o
+*.so
+*.so.*
+*.pgm
+__pycache__/
+*.pyc
+betterlife347d-probe
+tools/betterlife347d-probe
+.sdocs/
+.DS_Store

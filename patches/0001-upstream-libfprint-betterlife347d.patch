@@ -1,0 +1,51 @@
+diff --git a/libfprint/fprint-list-udev-hwdb.c b/libfprint/fprint-list-udev-hwdb.c
+index 539f3e6..ca63850 100644
+--- a/libfprint/fprint-list-udev-hwdb.c
++++ b/libfprint/fprint-list-udev-hwdb.c
+@@ -206,6 +206,8 @@ static const FpIdEntry allowlist_id_table[] = {
+ };
+ 
+ static const FpIdEntry denylist_id_table[] = {
++  { .vid = 0x347d, .pid = 0x0302 }, /* Blestech Betterlife 347d:0302 MOC */
++  { .vid = 0x347d, .pid = 0x0304 }, /* Blestech Betterlife 347d:0304 MOH */
+   { .vid = 0x0483, .pid = 0x2016 },
+   /* https://bugs.freedesktop.org/show_bug.cgi?id=66659 */
+   { .vid = 0x045e, .pid = 0x00bb },
+diff --git a/libfprint/meson.build b/libfprint/meson.build
+index f11533c..c1c69dd 100644
+--- a/libfprint/meson.build
++++ b/libfprint/meson.build
+@@ -139,6 +139,8 @@ driver_sources = {
+     'focaltech_moc' : files('drivers/focaltech_moc/focaltech_moc.c'),
+     'mafpmoc' : files('drivers/mafpmoc/mafpmoc.c'),
+     'secugen' : files('drivers/secugen.c'),
++    'betterlife347d' : files('drivers/betterlife347d/betterlife347d.c'),
++    'betterlife347d_moc' : files('drivers/betterlife347d/betterlife347d_moc.c'),
+ }
+ 
+ helper_sources = {
+@@ -149,6 +151,11 @@ helper_sources = {
+     'pixman': files(),
+     'udev': files(),
+     'virtual': files('drivers/virtual-device-listener.c'),
++    'betterlife347d_proto': files(
++        'drivers/betterlife347d/betterlife347d-proto.c',
++        'drivers/betterlife347d/sm3.c',
++        'drivers/betterlife347d/sm4.c',
++    ),
+ }
+ 
+ drivers_sources = []
+diff --git a/meson.build b/meson.build
+index ab09dc1..2c6d6b7 100644
+--- a/meson.build
++++ b/meson.build
+@@ -147,6 +147,8 @@ drivers_info = {
+     'focaltech_moc': {},
+     'mafpmoc': {},
+     'secugen': {},
++    'betterlife347d': { 'helper': ['openssl', 'betterlife347d_proto'] },
++    'betterlife347d_moc': { 'helper': ['openssl', 'betterlife347d_proto'] },
+ 
+     # SPI driver (non-optional if SPI is available)
+     'elanspi': { 'spi': true, 'helper': ['udev'], 'optional': not have_spi },

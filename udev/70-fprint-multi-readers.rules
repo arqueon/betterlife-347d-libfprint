@@ -1,0 +1,6 @@
+# Unified udev rules for Betterlife (347d:0302 MOC & 347d:0304 MOH), ZKTeco ZK9500 (1b55:0124),
+# and Chipsailing CS9711 (2541:0236): keep out of USB autosuspend and grant active session uaccess.
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="347d", ATTR{idProduct}=="0302", TAG+="uaccess", ENV{ID_LIBFPRINT_DRIVER}="betterlife347d_moc", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="347d", ATTR{idProduct}=="0304", TAG+="uaccess", ENV{ID_LIBFPRINT_DRIVER}="betterlife347d", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b55", ATTR{idProduct}=="0124", TAG+="uaccess", ENV{ID_LIBFPRINT_DRIVER}="zk9500", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2541", ATTR{idProduct}=="0236", ENV{ID_LIBFPRINT_DRIVER}="cs9711", TEST=="power/control", ATTR{power/control}="on"
