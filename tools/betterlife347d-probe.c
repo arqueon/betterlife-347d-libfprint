@@ -92,7 +92,7 @@ xfer_cmd (libusb_device_handle *h,
 int
 main (void)
 {
-  static const uint16_t pids[] = { 0x0302, 0x0304 };
+  static const uint16_t pids[] = { 0x00f0, 0x0302, 0x0304 };
   libusb_context *ctx = NULL;
   libusb_device_handle *h = NULL;
   uint16_t found_pid = 0;

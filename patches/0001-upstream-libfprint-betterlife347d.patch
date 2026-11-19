@@ -2,11 +2,12 @@ diff --git a/libfprint/fprint-list-udev-hwdb.c b/libfprint/fprint-list-udev-hwdb
 index 539f3e6..ca63850 100644
 --- a/libfprint/fprint-list-udev-hwdb.c
 +++ b/libfprint/fprint-list-udev-hwdb.c
-@@ -206,6 +206,8 @@ static const FpIdEntry allowlist_id_table[] = {
+@@ -206,6 +206,9 @@ static const FpIdEntry allowlist_id_table[] = {
  };
  
  static const FpIdEntry denylist_id_table[] = {
 +  { .vid = 0x347d, .pid = 0x0302 }, /* Blestech Betterlife 347d:0302 MOC */
++  { .vid = 0x347d, .pid = 0x00f0 }, /* Blestech Betterlife 347d:00f0 MOC */
 +  { .vid = 0x347d, .pid = 0x0304 }, /* Blestech Betterlife 347d:0304 MOH */
    { .vid = 0x0483, .pid = 0x2016 },
    /* https://bugs.freedesktop.org/show_bug.cgi?id=66659 */
