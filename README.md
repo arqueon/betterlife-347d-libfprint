@@ -11,6 +11,7 @@ Native Linux **`libfprint-2`** drivers for **Blestech / Shenzhen Betterlife (`bt
 | USB ID | Model | Mode | `libfprint` Driver | Matching Engine |
 |--------|-------|------|--------------------|-----------------|
 | **`347d:0302`** | `btlfp Betterlife Fingerprint` (chip `0x5f83`, 112×96) | **Match-On-Chip (MOC)** | `betterlife347d_moc` (`FpDevice`) | On-chip MCU flash (10 template slots, 7 enroll stages) |
+| **`347d:00f0`** | `btlfp Betterlife Fingerprint` (chip `0x5f83`, 112×96) | **Match-On-Chip (MOC)** | `betterlife347d_moc` (`FpDevice`) | On-chip MCU flash (10 template slots, 7 enroll stages) |
 | **`347d:0304`** | `btlfp Betterlife Fingerprint` (96×112) | **Match-On-Host (MOH)** | `betterlife347d` (`FpImageDevice`) | Host-side **SIGFM** SIFT matcher (`libfprint-CS9711`, OpenCV 4/5) |
 
 Integrates out-of-the-box with **`fprintd`**, **PAM** (`sudo`, `polkit-1`, GDM/SDDM/greetd, DankMaterialShell, GNOME/KDE lockscreens), and multi-reader setups alongside **ZKTeco ZK9500 (`1b55:0124`)** and **Chipsailing CS9711 (`2541:0236`)**.
@@ -29,7 +30,7 @@ paru -S libfprint-betterlife-347d-git fprintd
 yay -S libfprint-betterlife-347d-git fprintd
 ```
 
-- **OpenCV-free variant (`347d:0302` MOC only):** Build [`packaging/arch-upstream/PKGBUILD`](packaging/arch-upstream/PKGBUILD) against vanilla upstream `freedesktop.org/libfprint` without OpenCV.
+- **OpenCV-free variant (`347d:0302` / `347d:00f0` MOC only):** Build [`packaging/arch-upstream/PKGBUILD`](packaging/arch-upstream/PKGBUILD) against vanilla upstream `freedesktop.org/libfprint` without OpenCV.
 - **3-family unified variant (Betterlife `347d` + ZKTeco `ZK9500` + Chipsailing `CS9711`):** Run `./build-pkg.sh` from a clone of this repository and install the generated `.pkg.tar.zst` with `sudo pacman -U`.
 
 ### 2. Debian / Ubuntu / Fedora / openSUSE (Generic Linux Installer)
@@ -57,7 +58,7 @@ Then clone and run the automated installer:
 git clone https://github.com/arqueon/betterlife-347d-libfprint.git
 cd betterlife-347d-libfprint
 ./scripts/install-generic-linux.sh
-# Or without OpenCV (vanilla upstream libfprint, recommended if you only use 347d:0302 MOC):
+# Or without OpenCV (vanilla upstream libfprint, recommended if you only use 347d:0302 / 347d:00f0 MOC):
 ./scripts/install-generic-linux.sh --upstream-only
 ```
 
@@ -74,7 +75,7 @@ betterlife-fprintd status
 # Passive read-only USB diagnostic probe (firmware version, scheme, chip ID, MCU slots)
 betterlife347d-probe
 
-# Enroll a finger on Betterlife 347d:0302 (1 duplicate-check touch + 7 MOC stages = 8 touches)
+# Enroll a finger on Betterlife 347d:0302 / 347d:00f0 (1 duplicate-check touch + 7 MOC stages = 8 touches)
 betterlife-fprintd enroll right-index-finger
 
 # Verify against Betterlife 347d:0302 / 347d:0304

@@ -1840,6 +1840,7 @@ fpi_device_betterlife347d_moc_finalize (GObject *object)
 
 static const FpIdEntry id_table[] = {
   { .vid = 0x347d, .pid = 0x0302 },
+  { .vid = 0x347d, .pid = 0x00f0 },
   { .vid = 0, .pid = 0, .driver_data = 0 },
 };
 
@@ -1861,7 +1862,7 @@ fpi_device_betterlife347d_moc_class_init (FpiDeviceBetterlife347dMocClass *klass
   object_class->finalize = fpi_device_betterlife347d_moc_finalize;
 
   dev_class->id = FP_COMPONENT;
-  dev_class->full_name = "Blestech Betterlife 347d:0302 MOC Fingerprint Sensor";
+  dev_class->full_name = "Blestech Betterlife 347d MOC Fingerprint Sensor";
   dev_class->type = FP_DEVICE_TYPE_USB;
   dev_class->id_table = id_table;
   dev_class->scan_type = FP_SCAN_TYPE_PRESS;

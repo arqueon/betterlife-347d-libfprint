@@ -2,4 +2,5 @@
 # Keep bus-powered USB 1.1 sensors out of USB autosuspend to prevent session drops,
 # and grant active desktop user uaccess for standalone diagnostic probing when idle.
 ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="347d", ATTR{idProduct}=="0302", TAG+="uaccess", ENV{ID_LIBFPRINT_DRIVER}="betterlife347d_moc", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="347d", ATTR{idProduct}=="00f0", TAG+="uaccess", ENV{ID_LIBFPRINT_DRIVER}="betterlife347d_moc", TEST=="power/control", ATTR{power/control}="on"
 ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="347d", ATTR{idProduct}=="0304", TAG+="uaccess", ENV{ID_LIBFPRINT_DRIVER}="betterlife347d", TEST=="power/control", ATTR{power/control}="on"
